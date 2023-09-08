@@ -370,7 +370,8 @@ func (r *SearchRequest) UnmarshalJSON(input []byte) error {
 		SearchBefore     []string          `json:"search_before"`
 	}
 
-	if err = util.UnmarshalJSON(input, &temp); err != nil {
+	err := util.UnmarshalJSON(input, &temp)
+	if err != nil {
 		return err
 	}
 
