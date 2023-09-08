@@ -29,6 +29,7 @@ import (
 	"github.com/blevesearch/bleve/v2/search/collector"
 	"github.com/blevesearch/bleve/v2/search/query"
 	"github.com/blevesearch/bleve/v2/size"
+	"github.com/blevesearch/bleve/v2/util"
 )
 
 var reflectStaticSizeSearchResult int
@@ -84,8 +85,7 @@ func (dr *dateTimeRange) UnmarshalJSON(input []byte) error {
 		End   *string `json:"end,omitempty"`
 	}
 
-	err := json.Unmarshal(input, &temp)
-	if err != nil {
+	if err := util.UnmarshalJSON(input, &temp); err != nil {
 		return err
 	}
 
@@ -112,7 +112,7 @@ func (dr *dateTimeRange) MarshalJSON() ([]byte, error) {
 	if dr.End.IsZero() && dr.endString != nil {
 		rv["end"] = dr.endString
 	}
-	return json.Marshal(rv)
+	return util.MarshalJSON(rv)
 }
 
 // A FacetRequest describes a facet or aggregation
@@ -370,8 +370,7 @@ func (r *SearchRequest) UnmarshalJSON(input []byte) error {
 		SearchBefore     []string          `json:"search_before"`
 	}
 
-	err := json.Unmarshal(input, &temp)
-	if err != nil {
+	if err = util.UnmarshalJSON(input, &temp); err != nil {
 		return err
 	}
 
@@ -443,13 +442,12 @@ func (iem IndexErrMap) MarshalJSON() ([]byte, error) {
 	for k, v := range iem {
 		tmp[k] = v.Error()
 	}
-	return json.Marshal(tmp)
+	return util.MarshalJSON(tmp)
 }
 
 func (iem IndexErrMap) UnmarshalJSON(data []byte) error {
 	var tmp map[string]string
-	err := json.Unmarshal(data, &tmp)
-	if err != nil {
+	if err := util.UnmarshalJSON(data, &tmp); err != nil {
 		return err
 	}
 	for k, v := range tmp {
