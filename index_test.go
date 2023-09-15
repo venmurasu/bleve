@@ -504,6 +504,76 @@ func TestBytesRead(t *testing.T) {
 	}
 }
 
+func TestIndexSectionsNew(t *testing.T) {
+	tmpIndexPath := createTmpIndexPath(t)
+	defer cleanupTmpIndexPath(t, tmpIndexPath)
+
+	indexMapping := NewIndexMapping()
+	indexMapping.TypeField = "type"
+	indexMapping.DefaultAnalyzer = "en"
+	documentMapping := NewDocumentMapping()
+	indexMapping.AddDocumentMapping("hotel", documentMapping)
+	indexMapping.StoreDynamic = false
+	indexMapping.DocValuesDynamic = false
+	contentFieldMapping := NewTextFieldMapping()
+	contentFieldMapping.IncludeInAll = false
+
+	reviewsMapping := NewDocumentMapping()
+	reviewsMapping.AddFieldMappingsAt("content", contentFieldMapping)
+	documentMapping.AddSubDocumentMapping("reviews", reviewsMapping)
+
+	typeFieldMapping := NewTextFieldMapping()
+	typeFieldMapping.Store = false
+	documentMapping.AddFieldMappingsAt("type", typeFieldMapping)
+
+	idx, err := NewUsing(tmpIndexPath, indexMapping, Config.DefaultIndexType, Config.DefaultMemKVStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() {
+		err := idx.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	batch, err := getBatchFromData(idx, "sample-data.json")
+	if err != nil {
+		t.Fatalf("failed to form a batch")
+	}
+	err = idx.Batch(batch)
+	if err != nil {
+		t.Fatalf("failed to index batch %v\n", err)
+	}
+	query := NewQueryStringQuery("united")
+	searchRequest := NewSearchRequestOptions(query, int(10), 0, true)
+	res, err := idx.Search(searchRequest)
+	if err != nil {
+		t.Error(err)
+	}
+
+	fmt.Printf("the results from the search %v", res)
+}
+
+func TestIndexSectionsOpen(t *testing.T) {
+	idx, err := Open("/Users/thejasbhat/fts/data/beer-sample._default.bix_5c5ffb88b031ecd1_acbbef99.pindex")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	typeFacet := NewFacetRequest("type", 2)
+	query := NewQueryStringQuery("wine")
+	searchRequest := NewSearchRequestOptions(query, int(10), 0, false)
+	searchRequest.AddFacet("types", typeFacet)
+	res, err := idx.Search(searchRequest)
+	if err != nil {
+		t.Error(err)
+	}
+
+	fmt.Printf("the search result for query %v is :\n %v\n", query, res)
+}
+
 func getBatchFromData(idx Index, fileName string) (*Batch, error) {
 	pwd, err := os.Getwd()
 	if err != nil {

@@ -32,6 +32,7 @@ require (
 
 require (
 	github.com/blevesearch/mmap-go v1.0.4 // indirect
+	github.com/blevesearch/zapx v0.0.0-00010101000000-000000000000 // indirect
 	github.com/couchbase/ghistogram v0.1.0 // indirect
 	github.com/golang/geo v0.0.0-20210211234256-740aa86cb551 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
@@ -41,3 +42,5 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	golang.org/x/sys v0.5.0 // indirect
 )
+
+replace github.com/blevesearch/zapx => ../zapx

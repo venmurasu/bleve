@@ -23,6 +23,7 @@ import (
 	"github.com/blevesearch/bleve/v2/geo"
 	segment "github.com/blevesearch/scorch_segment_api/v2"
 
+	zapv16 "github.com/blevesearch/zapx"
 	zapv11 "github.com/blevesearch/zapx/v11"
 	zapv12 "github.com/blevesearch/zapx/v12"
 	zapv13 "github.com/blevesearch/zapx/v13"
@@ -73,7 +74,8 @@ var defaultSegmentPlugin SegmentPlugin
 
 func init() {
 	ResetSegmentPlugins()
-	RegisterSegmentPlugin(&zapv15.ZapPlugin{}, true)
+	RegisterSegmentPlugin(&zapv16.ZapPlugin{}, true)
+	RegisterSegmentPlugin(&zapv15.ZapPlugin{}, false)
 	RegisterSegmentPlugin(&zapv14.ZapPlugin{}, false)
 	RegisterSegmentPlugin(&zapv13.ZapPlugin{}, false)
 	RegisterSegmentPlugin(&zapv12.ZapPlugin{}, false)
@@ -110,6 +112,13 @@ func SupportedSegmentTypeVersions(typ string) (rv []uint32) {
 
 func chooseSegmentPlugin(forcedSegmentType string,
 	forcedSegmentVersion uint32) (SegmentPlugin, error) {
+
+	// v16 and above are able to handle upgrade scenarios, so no need to load
+	// the force load the older plugins
+	if defaultSegmentPlugin.Version() >= 16 {
+		return defaultSegmentPlugin, nil
+	}
+
 	if versions, ok := supportedSegmentPlugins[forcedSegmentType]; ok {
 		if segPlugin, ok := versions[uint32(forcedSegmentVersion)]; ok {
 			return segPlugin, nil
