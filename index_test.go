@@ -504,7 +504,7 @@ func TestBytesRead(t *testing.T) {
 	}
 }
 
-func TestIndexSectionsNew(t *testing.T) {
+func TestIndexSectionsUpgrade(t *testing.T) {
 	tmpIndexPath := createTmpIndexPath(t)
 	defer cleanupTmpIndexPath(t, tmpIndexPath)
 
@@ -524,9 +524,15 @@ func TestIndexSectionsNew(t *testing.T) {
 
 	typeFieldMapping := NewTextFieldMapping()
 	typeFieldMapping.Store = false
+	typeFieldMapping.DocValues = true
 	documentMapping.AddFieldMappingsAt("type", typeFieldMapping)
 
-	idx, err := NewUsing(tmpIndexPath, indexMapping, Config.DefaultIndexType, Config.DefaultMemKVStore, nil)
+	config := map[string]interface{}{
+		"forceSegmentVersion": 11,
+		"forceSegmentType":    "zap",
+	}
+
+	idx, err := NewUsing(tmpIndexPath, indexMapping, Config.DefaultIndexType, Config.DefaultMemKVStore, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,32 +552,19 @@ func TestIndexSectionsNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to index batch %v\n", err)
 	}
-	query := NewQueryStringQuery("united")
-	searchRequest := NewSearchRequestOptions(query, int(10), 0, true)
-	res, err := idx.Search(searchRequest)
-	if err != nil {
-		t.Error(err)
-	}
-
-	fmt.Printf("the results from the search %v", res)
-}
-
-func TestIndexSectionsOpen(t *testing.T) {
-	idx, err := Open("/Users/thejasbhat/fts/data/beer-sample._default.bix_5c5ffb88b031ecd1_acbbef99.pindex")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	typeFacet := NewFacetRequest("type", 2)
-	query := NewQueryStringQuery("wine")
-	searchRequest := NewSearchRequestOptions(query, int(10), 0, false)
+	query := NewQueryStringQuery("united")
+
+	searchRequest := NewSearchRequestOptions(query, int(10), 0, true)
 	searchRequest.AddFacet("types", typeFacet)
 	res, err := idx.Search(searchRequest)
 	if err != nil {
 		t.Error(err)
 	}
 
-	fmt.Printf("the search result for query %v is :\n %v\n", query, res)
+	if res.Facets["types"].Total != 9 {
+		t.Errorf("expected count for types facets is 9 got %v", res.Facets["types"].Total)
+	}
 }
 
 func getBatchFromData(idx Index, fileName string) (*Batch, error) {

@@ -23,12 +23,7 @@ import (
 	"github.com/blevesearch/bleve/v2/geo"
 	segment "github.com/blevesearch/scorch_segment_api/v2"
 
-	zapv16 "github.com/blevesearch/zapx"
-	zapv11 "github.com/blevesearch/zapx/v11"
-	zapv12 "github.com/blevesearch/zapx/v12"
-	zapv13 "github.com/blevesearch/zapx/v13"
-	zapv14 "github.com/blevesearch/zapx/v14"
-	zapv15 "github.com/blevesearch/zapx/v15"
+	zapv16 "github.com/blevesearch/zapx/v16"
 )
 
 // SegmentPlugin represents the essential functions required by a package to plug in
@@ -75,11 +70,6 @@ var defaultSegmentPlugin SegmentPlugin
 func init() {
 	ResetSegmentPlugins()
 	RegisterSegmentPlugin(&zapv16.ZapPlugin{}, true)
-	RegisterSegmentPlugin(&zapv15.ZapPlugin{}, false)
-	RegisterSegmentPlugin(&zapv14.ZapPlugin{}, false)
-	RegisterSegmentPlugin(&zapv13.ZapPlugin{}, false)
-	RegisterSegmentPlugin(&zapv12.ZapPlugin{}, false)
-	RegisterSegmentPlugin(&zapv11.ZapPlugin{}, false)
 }
 
 func ResetSegmentPlugins() {
@@ -113,6 +103,10 @@ func SupportedSegmentTypeVersions(typ string) (rv []uint32) {
 func chooseSegmentPlugin(forcedSegmentType string,
 	forcedSegmentVersion uint32) (SegmentPlugin, error) {
 
+	// TBD: zap v16 can support the older file formats as well, however
+	// it breaks the TestForceVersion unit test in scorch_test.go
+	// commenting the code below to avoid any breakages.
+	//
 	// v16 and above are able to handle upgrade scenarios, so no need to load
 	// the force load the older plugins
 	if defaultSegmentPlugin.Version() >= 16 {
