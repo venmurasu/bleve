@@ -29,6 +29,11 @@ func newStoreSlice(capacity int, compare collectorCompare) *collectStoreSlice {
 	return rv
 }
 
+func (c *collectStoreSlice) Add(doc *search.DocumentMatch) *search.DocumentMatch {
+	c.slice = append(c.slice, doc)
+	return nil
+}
+
 func (c *collectStoreSlice) AddNotExceedingSize(doc *search.DocumentMatch,
 	size int) *search.DocumentMatch {
 	c.add(doc)
@@ -70,6 +75,10 @@ func (c *collectStoreSlice) Final(skip int, fixup collectorFixup) (search.Docume
 		return c.slice[skip:], nil
 	}
 	return search.DocumentMatchCollection{}, nil
+}
+
+func (c *collectStoreSlice) Internal() search.DocumentMatchCollection {
+	return c.slice
 }
 
 func (c *collectStoreSlice) len() int {

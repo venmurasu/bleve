@@ -65,14 +65,55 @@ type ValidatableQuery interface {
 	Validate() error
 }
 
+// ParsePreSearchData deserializes a JSON representation of
+// a PreSearchData object.
+func ParsePreSearchData(input []byte) (map[string]interface{}, error) {
+	var rv map[string]interface{}
+
+	var tmp map[string]json.RawMessage
+	err := util.UnmarshalJSON(input, &tmp)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range tmp {
+		switch k {
+		case search.KnnPreSearchDataKey:
+			var value []*search.DocumentMatch
+			if v != nil {
+				err := util.UnmarshalJSON(v, &value)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if rv == nil {
+				rv = make(map[string]interface{})
+			}
+			rv[search.KnnPreSearchDataKey] = value
+		}
+	}
+	return rv, nil
+}
+
 // ParseQuery deserializes a JSON representation of
 // a Query object.
 func ParseQuery(input []byte) (Query, error) {
+	if len(input) == 0 {
+		// interpret as a match_none query
+		return NewMatchNoneQuery(), nil
+	}
+
 	var tmp map[string]interface{}
 	err := util.UnmarshalJSON(input, &tmp)
 	if err != nil {
 		return nil, err
 	}
+
+	if len(tmp) == 0 {
+		// interpret as a match_none query
+		return NewMatchNoneQuery(), nil
+	}
+
 	_, hasFuzziness := tmp["fuzziness"]
 	_, isMatchQuery := tmp["match"]
 	_, isMatchPhraseQuery := tmp["match_phrase"]

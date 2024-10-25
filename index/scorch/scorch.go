@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,13 +49,20 @@ type Scorch struct {
 
 	unsafeBatch bool
 
-	rootLock             sync.RWMutex
+	rootLock sync.RWMutex
+
 	root                 *IndexSnapshot // holds 1 ref-count on the root
 	rootPersisted        []chan error   // closed when root is persisted
 	persistedCallbacks   []index.BatchCallback
 	nextSnapshotEpoch    uint64
 	eligibleForRemoval   []uint64        // Index snapshot epochs that are safe to GC.
 	ineligibleForRemoval map[string]bool // Filenames that should not be GC'ed yet.
+
+	// keeps track of segments scheduled for online copy/backup operation. Each segment's filename maps to
+	// the count of copy schedules. Segments with non-zero counts are protected from removal by the cleanup
+	// operation. Counts decrement upon successful copy, allowing removal of segments with zero or absent counts.
+	// must be accessed within the rootLock as it is accessed by the asynchronous cleanup routine.
+	copyScheduled map[string]int
 
 	numSnapshotsToKeep       int
 	rollbackRetentionFactor  float64
@@ -69,7 +77,7 @@ type Scorch struct {
 	rootBolt                 *bolt.DB
 	asyncTasks               sync.WaitGroup
 
-	onEvent      func(event Event)
+	onEvent      func(event Event) bool
 	onAsyncError func(err error, path string)
 
 	forceMergeRequestCh chan *mergerCtrl
@@ -112,6 +120,7 @@ func NewScorch(storeName string,
 		ineligibleForRemoval: map[string]bool{},
 		forceMergeRequestCh:  make(chan *mergerCtrl, 1),
 		segPlugin:            defaultSegmentPlugin,
+		copyScheduled:        map[string]int{},
 	}
 
 	forcedSegmentType, forcedSegmentVersion, err := configForceSegmentTypeVersion(config)
@@ -175,12 +184,14 @@ func (s *Scorch) NumEventsBlocking() uint64 {
 	return eventsStarted - eventsCompleted
 }
 
-func (s *Scorch) fireEvent(kind EventKind, dur time.Duration) {
+func (s *Scorch) fireEvent(kind EventKind, dur time.Duration) bool {
+	res := true
 	if s.onEvent != nil {
 		atomic.AddUint64(&s.stats.TotEventTriggerStarted, 1)
-		s.onEvent(Event{Kind: kind, Scorch: s, Duration: dur})
+		res = s.onEvent(Event{Kind: kind, Scorch: s, Duration: dur})
 		atomic.AddUint64(&s.stats.TotEventTriggerCompleted, 1)
 	}
+	return res
 }
 
 func (s *Scorch) fireAsyncError(err error) {
@@ -365,6 +376,8 @@ func (s *Scorch) Delete(id string) error {
 func (s *Scorch) Batch(batch *index.Batch) (err error) {
 	start := time.Now()
 
+	// notify handlers that we're about to index a batch of data
+	s.fireEvent(EventKindBatchIntroductionStart, 0)
 	defer func() {
 		s.fireEvent(EventKindBatchIntroduction, time.Since(start))
 	}()
@@ -423,11 +436,10 @@ func (s *Scorch) Batch(batch *index.Batch) (err error) {
 
 	indexStart := time.Now()
 
-	// notify handlers that we're about to introduce a segment
-	s.fireEvent(EventKindBatchIntroductionStart, 0)
-
 	var newSegment segment.Segment
 	var bufBytes uint64
+	stats := newFieldStats()
+
 	if len(analysisResults) > 0 {
 		newSegment, bufBytes, err = s.segPlugin.New(analysisResults)
 		if err != nil {
@@ -438,11 +450,14 @@ func (s *Scorch) Batch(batch *index.Batch) (err error) {
 				segB.BytesWritten())
 		}
 		atomic.AddUint64(&s.iStats.newSegBufBytesAdded, bufBytes)
+		if fsr, ok := newSegment.(segment.FieldStatsReporter); ok {
+			fsr.UpdateFieldStats(stats)
+		}
 	} else {
 		atomic.AddUint64(&s.stats.TotBatchesEmpty, 1)
 	}
 
-	err = s.prepareSegment(newSegment, ids, batch.InternalOps, batch.PersistedCallback())
+	err = s.prepareSegment(newSegment, ids, batch.InternalOps, batch.PersistedCallback(), stats)
 	if err != nil {
 		if newSegment != nil {
 			_ = newSegment.Close()
@@ -462,15 +477,15 @@ func (s *Scorch) Batch(batch *index.Batch) (err error) {
 }
 
 func (s *Scorch) prepareSegment(newSegment segment.Segment, ids []string,
-	internalOps map[string][]byte, persistedCallback index.BatchCallback) error {
+	internalOps map[string][]byte, persistedCallback index.BatchCallback, stats *fieldStats) error {
 
 	// new introduction
 	introduction := &segmentIntroduction{
 		id:                atomic.AddUint64(&s.nextSegmentID, 1),
 		data:              newSegment,
 		ids:               ids,
-		obsoletes:         make(map[uint64]*roaring.Bitmap),
 		internal:          internalOps,
+		stats:             stats,
 		applied:           make(chan error),
 		persistedCallback: persistedCallback,
 	}
@@ -486,6 +501,8 @@ func (s *Scorch) prepareSegment(newSegment segment.Segment, ids []string,
 	s.rootLock.RUnlock()
 
 	defer func() { _ = root.DecRef() }()
+
+	introduction.obsoletes = make(map[uint64]*roaring.Bitmap, len(root.segment))
 
 	for _, seg := range root.segment {
 		delta, err := seg.segment.DocNumbers(ids)
@@ -617,6 +634,8 @@ func (s *Scorch) StatsMap() map[string]interface{} {
 	m["index_time"] = m["TotIndexTime"]
 	m["term_searchers_started"] = m["TotTermSearchersStarted"]
 	m["term_searchers_finished"] = m["TotTermSearchersFinished"]
+	m["knn_searches"] = m["TotKNNSearches"]
+
 	m["num_bytes_read_at_query_time"] = m["TotBytesReadAtQueryTime"]
 	m["num_plain_text_bytes_indexed"] = m["TotIndexedPlainTextBytes"]
 	m["num_bytes_written_at_index_time"] = m["TotBytesWrittenAtIndexTime"]
@@ -638,6 +657,20 @@ func (s *Scorch) StatsMap() map[string]interface{} {
 	m["num_persister_nap_merger_break"] = m["TotPersisterMergerNapBreak"]
 	m["total_compaction_written_bytes"] = m["TotFileMergeWrittenBytes"]
 
+	// calculate the aggregate of all the segment's field stats
+	aggFieldStats := newFieldStats()
+	for _, segmentSnapshot := range indexSnapshot.Segments() {
+		if segmentSnapshot.stats != nil {
+			aggFieldStats.Aggregate(segmentSnapshot.stats)
+		}
+	}
+
+	aggFieldStatsMap := aggFieldStats.Fetch()
+	for statName, stats := range aggFieldStatsMap {
+		for fieldName, val := range stats {
+			m["field:"+fieldName+":"+statName] = val
+		}
+	}
 	return m
 }
 
@@ -761,4 +794,91 @@ func parseToInteger(i interface{}) (int, error) {
 	default:
 		return 0, fmt.Errorf("expects int or float64 value")
 	}
+}
+
+// Holds Zap's field level stats at a segment level
+type fieldStats struct {
+	// StatName -> FieldName -> value
+	statMap map[string]map[string]uint64
+}
+
+// Add the data into the map after checking if the statname is valid
+func (fs *fieldStats) Store(statName, fieldName string, value uint64) {
+	if _, exists := fs.statMap[statName]; !exists {
+		fs.statMap[statName] = make(map[string]uint64)
+	}
+	fs.statMap[statName][fieldName] = value
+}
+
+// Combine the given stats map with the existing map
+func (fs *fieldStats) Aggregate(stats segment.FieldStats) {
+
+	statMap := stats.Fetch()
+	if statMap == nil {
+		return
+	}
+	for statName, statMap := range statMap {
+		if _, exists := fs.statMap[statName]; !exists {
+			fs.statMap[statName] = make(map[string]uint64)
+		}
+		for fieldName, val := range statMap {
+			if _, exists := fs.statMap[statName][fieldName]; !exists {
+				fs.statMap[statName][fieldName] = 0
+			}
+			fs.statMap[statName][fieldName] += val
+		}
+	}
+}
+
+// Returns the stats map
+func (fs *fieldStats) Fetch() map[string]map[string]uint64 {
+	if fs == nil {
+		return nil
+	}
+
+	return fs.statMap
+}
+
+// Initializes an empty stats map
+func newFieldStats() *fieldStats {
+	rv := &fieldStats{
+		statMap: map[string]map[string]uint64{},
+	}
+	return rv
+}
+
+// CopyReader returns a low-level accessor for index data, ensuring persisted segments
+// remain on disk for backup, preventing race conditions with the persister/merger cleanup.
+// Close the reader after backup to allow segment removal by the persister/merger.
+func (s *Scorch) CopyReader() index.CopyReader {
+	s.rootLock.Lock()
+	rv := s.root
+	if rv != nil {
+		rv.AddRef()
+		var fileName string
+		// schedule a backup for all the segments from the root. Note that the
+		// both the unpersisted and persisted segments are scheduled for backup.
+		// because during the backup, the unpersisted segments may get persisted and
+		// hence we need to protect both the unpersisted and persisted segments from removal
+		// by the cleanup routine during the online backup
+		for _, seg := range rv.segment {
+			if perSeg, ok := seg.segment.(segment.PersistedSegment); ok {
+				// segment is persisted
+				fileName = filepath.Base(perSeg.Path())
+			} else {
+				// segment is not persisted
+				// the name of the segment file that is generated if the
+				// the segment is persisted in the future.
+				fileName = zapFileName(seg.id)
+			}
+			rv.parent.copyScheduled[fileName]++
+		}
+	}
+	s.rootLock.Unlock()
+	return rv
+}
+
+// external API to fire a scorch event (EventKindIndexStart) externally from bleve
+func (s *Scorch) FireIndexEvent() {
+	s.fireEvent(EventKindIndexStart, 0)
 }

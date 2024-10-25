@@ -75,8 +75,11 @@ type FieldMapping struct {
 
 	// Similarity is the similarity algorithm used for scoring
 	// vector fields.
-	// See: util.DefaultSimilarityMetric & util.SupportedSimilarityMetrics
+	// See: index.DefaultSimilarityMetric & index.SupportedSimilarityMetrics
 	Similarity string `json:"similarity,omitempty"`
+
+	// Applicable to vector fields only - optimization string
+	VectorIndexOptimizedFor string `json:"vector_index_optimized_for,omitempty"`
 }
 
 // NewTextFieldMapping returns a default field mapping for text
@@ -99,7 +102,7 @@ func newTextFieldMappingDynamic(im *IndexMappingImpl) *FieldMapping {
 	return rv
 }
 
-// NewKeyworFieldMapping returns a default field mapping for text with analyzer "keyword".
+// NewKeywordFieldMapping returns a default field mapping for text with analyzer "keyword".
 func NewKeywordFieldMapping() *FieldMapping {
 	return &FieldMapping{
 		Type:               "text",
@@ -463,6 +466,11 @@ func (fm *FieldMapping) UnmarshalJSON(data []byte) error {
 			}
 		case "similarity":
 			err := json.Unmarshal(v, &fm.Similarity)
+			if err != nil {
+				return err
+			}
+		case "vector_index_optimized_for":
+			err := json.Unmarshal(v, &fm.VectorIndexOptimizedFor)
 			if err != nil {
 				return err
 			}

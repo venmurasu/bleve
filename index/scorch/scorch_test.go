@@ -1210,7 +1210,7 @@ func TestIndexInsertUpdateDeleteWithMultipleTypesStored(t *testing.T) {
 				t.Error(err)
 			} else {
 				if numFieldNumer != 35.99 {
-					t.Errorf("expeted numeric value 35.99, got %f", numFieldNumer)
+					t.Errorf("expected numeric value 35.99, got %f", numFieldNumer)
 				}
 			}
 		} else if field.Name() == "unixEpoch" {
@@ -1291,7 +1291,7 @@ func TestIndexInsertUpdateDeleteWithMultipleTypesStored(t *testing.T) {
 				t.Error(err)
 			} else {
 				if numFieldNumer != 36.99 {
-					t.Errorf("expeted numeric value 36.99, got %f", numFieldNumer)
+					t.Errorf("expected numeric value 36.99, got %f", numFieldNumer)
 				}
 			}
 		} else if field.Name() == "_id" {
@@ -2661,5 +2661,26 @@ func TestReadOnlyIndex(t *testing.T) {
 	}
 	if docCount != 1 {
 		t.Errorf("Expected document count to be %d got %d", 1, docCount)
+	}
+}
+
+func BenchmarkAggregateFieldStats(b *testing.B) {
+
+	fieldStatsArray := make([]*fieldStats, 1000)
+
+	for i := range fieldStatsArray {
+		fieldStatsArray[i] = newFieldStats()
+
+		fieldStatsArray[i].Store("num_vectors", "vector", uint64(rand.Intn(1000)))
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		aggFieldStats := newFieldStats()
+
+		for _, fs := range fieldStatsArray {
+			aggFieldStats.Aggregate(fs)
+		}
 	}
 }

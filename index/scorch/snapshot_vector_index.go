@@ -19,20 +19,22 @@ package scorch
 
 import (
 	"context"
+	"encoding/json"
 
 	index "github.com/blevesearch/bleve_index_api"
 	segment_api "github.com/blevesearch/scorch_segment_api/v2"
 )
 
 func (is *IndexSnapshot) VectorReader(ctx context.Context, vector []float32,
-	field string, k int64) (
+	field string, k int64, searchParams json.RawMessage) (
 	index.VectorReader, error) {
 
 	rv := &IndexSnapshotVectorReader{
-		vector:   vector,
-		field:    field,
-		k:        k,
-		snapshot: is,
+		vector:       vector,
+		field:        field,
+		k:            k,
+		snapshot:     is,
+		searchParams: searchParams,
 	}
 
 	if rv.postings == nil {
@@ -42,16 +44,33 @@ func (is *IndexSnapshot) VectorReader(ctx context.Context, vector []float32,
 		rv.iterators = make([]segment_api.VecPostingsIterator, len(is.segment))
 	}
 
-	for i, seg := range is.segment {
-		if sv, ok := seg.segment.(segment_api.VectorSegment); ok {
-			pl, err := sv.SimilarVectors(field, vector, k, seg.deleted)
-			if err != nil {
-				return nil, err
-			}
-			rv.postings[i] = pl
-			rv.iterators[i] = pl.Iterator(rv.iterators[i])
-		}
+	// initialize postings and iterators within the OptimizeVR's Finish()
+
+	return rv, nil
+}
+
+func (is *IndexSnapshot) VectorReaderWithFilter(ctx context.Context, vector []float32,
+	field string, k int64, searchParams json.RawMessage,
+	filterIDs []index.IndexInternalID) (
+	index.VectorReader, error) {
+
+	rv := &IndexSnapshotVectorReader{
+		vector:         vector,
+		field:          field,
+		k:              k,
+		snapshot:       is,
+		searchParams:   searchParams,
+		eligibleDocIDs: filterIDs,
 	}
+
+	if rv.postings == nil {
+		rv.postings = make([]segment_api.VecPostingsList, len(is.segment))
+	}
+	if rv.iterators == nil {
+		rv.iterators = make([]segment_api.VecPostingsIterator, len(is.segment))
+	}
+
+	// initialize postings and iterators within the OptimizeVR's Finish()
 
 	return rv, nil
 }

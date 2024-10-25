@@ -471,14 +471,42 @@ func (is *IndexSnapshot) Document(id string) (rv index.Document, err error) {
 	return rvd, nil
 }
 
+// In a multi-segment index, each document has:
+// 1. a local docnum - local to the segment
+// 2. a global docnum - unique identifier across the index
+// This function returns the segment index(the segment in which the docnum is present)
+// and local docnum of a document.
 func (is *IndexSnapshot) segmentIndexAndLocalDocNumFromGlobal(docNum uint64) (int, uint64) {
 	segmentIndex := sort.Search(len(is.offsets),
 		func(x int) bool {
 			return is.offsets[x] > docNum
 		}) - 1
 
-	localDocNum := docNum - is.offsets[segmentIndex]
+	localDocNum := is.localDocNumFromGlobal(segmentIndex, docNum)
 	return int(segmentIndex), localDocNum
+}
+
+// This function returns the local docnum, given the segment index and global docnum
+func (is *IndexSnapshot) localDocNumFromGlobal(segmentIndex int, docNum uint64) uint64 {
+	return docNum - is.offsets[segmentIndex]
+}
+
+// Function to return a mapping of the segment index to the live global	doc nums
+// in the segment of the specified index snapshot.
+func (is *IndexSnapshot) globalDocNums() map[int]*roaring.Bitmap {
+	if len(is.segment) == 0 {
+		return nil
+	}
+
+	segmentIndexGlobalDocNums := make(map[int]*roaring.Bitmap)
+
+	for i := range is.segment {
+		segmentIndexGlobalDocNums[i] = roaring.NewBitmap()
+		for _, localDocNum := range is.segment[i].DocNumbersLive().ToArray() {
+			segmentIndexGlobalDocNums[i].Add(localDocNum + uint32(is.offsets[i]))
+		}
+	}
+	return segmentIndexGlobalDocNums
 }
 
 func (is *IndexSnapshot) ExternalID(id index.IndexInternalID) (string, error) {
@@ -904,4 +932,27 @@ func (is *IndexSnapshot) GetSpatialAnalyzerPlugin(typ string) (
 		return nil, fmt.Errorf("no spatial plugin type: %s found", typ)
 	}
 	return rv, nil
+}
+
+func (is *IndexSnapshot) CloseCopyReader() error {
+	// first unmark the segments that were marked for backup by this index snapshot
+	is.parent.rootLock.Lock()
+	for _, seg := range is.segment {
+		var fileName string
+		if perSeg, ok := seg.segment.(segment.PersistedSegment); ok {
+			// segment is persisted
+			fileName = filepath.Base(perSeg.Path())
+		} else {
+			// segment is not persisted
+			// the name of the segment file that is generated if the
+			// the segment is persisted in the future.
+			fileName = zapFileName(seg.id)
+		}
+		if is.parent.copyScheduled[fileName]--; is.parent.copyScheduled[fileName] <= 0 {
+			delete(is.parent.copyScheduled, fileName)
+		}
+	}
+	is.parent.rootLock.Unlock()
+	// close the index snapshot normally
+	return is.Close()
 }

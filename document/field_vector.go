@@ -35,17 +35,20 @@ func init() {
 const DefaultVectorIndexingOptions = index.IndexField
 
 type VectorField struct {
-	name              string
-	dims              int    // Dimensionality of the vector
-	similarity        string // Similarity metric to use for scoring
-	options           index.FieldIndexingOptions
-	value             []float32
-	numPlainTextBytes uint64
+	name                    string
+	dims                    int    // Dimensionality of the vector
+	similarity              string // Similarity metric to use for scoring
+	options                 index.FieldIndexingOptions
+	value                   []float32
+	numPlainTextBytes       uint64
+	vectorIndexOptimizedFor string // Optimization applied to this index.
 }
 
 func (n *VectorField) Size() int {
 	return reflectStaticSizeVectorField + size.SizeOfPtr +
 		len(n.name) +
+		len(n.similarity) +
+		len(n.vectorIndexOptimizedFor) +
 		int(numBytesFloat32s(n.value))
 }
 
@@ -95,25 +98,27 @@ func (n *VectorField) GoString() string {
 // For the sake of not polluting the API, we are keeping arrayPositions as a
 // parameter, but it is not used.
 func NewVectorField(name string, arrayPositions []uint64,
-	vector []float32, dims int, similarity string) *VectorField {
+	vector []float32, dims int, similarity, vectorIndexOptimizedFor string) *VectorField {
 	return NewVectorFieldWithIndexingOptions(name, arrayPositions,
-		vector, dims, similarity, DefaultVectorIndexingOptions)
+		vector, dims, similarity, vectorIndexOptimizedFor,
+		DefaultVectorIndexingOptions)
 }
 
 // For the sake of not polluting the API, we are keeping arrayPositions as a
 // parameter, but it is not used.
 func NewVectorFieldWithIndexingOptions(name string, arrayPositions []uint64,
-	vector []float32, dims int, similarity string,
+	vector []float32, dims int, similarity, vectorIndexOptimizedFor string,
 	options index.FieldIndexingOptions) *VectorField {
 	options = options | DefaultVectorIndexingOptions
 
 	return &VectorField{
-		name:              name,
-		dims:              dims,
-		similarity:        similarity,
-		options:           options,
-		value:             vector,
-		numPlainTextBytes: numBytesFloat32s(vector),
+		name:                    name,
+		dims:                    dims,
+		similarity:              similarity,
+		options:                 options,
+		value:                   vector,
+		numPlainTextBytes:       numBytesFloat32s(vector),
+		vectorIndexOptimizedFor: vectorIndexOptimizedFor,
 	}
 }
 
@@ -135,4 +140,8 @@ func (n *VectorField) Dims() int {
 
 func (n *VectorField) Similarity() string {
 	return n.similarity
+}
+
+func (n *VectorField) IndexOptimizedFor() string {
+	return n.vectorIndexOptimizedFor
 }

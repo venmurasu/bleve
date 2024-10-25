@@ -17,6 +17,7 @@ package scorch
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -424,6 +425,7 @@ func (s *Scorch) persistSnapshotMaybeMerge(snapshot *IndexSnapshot) (
 				id:      newSegmentID,
 				segment: segment.segment,
 				deleted: nil, // nil since merging handled deletions
+				stats:   nil,
 			})
 			break
 		}
@@ -547,11 +549,14 @@ func prepareBoltSnapshot(snapshot *IndexSnapshot, tx *bolt.Tx, path string,
 		val := make([]byte, 8)
 		bytesWritten := atomic.LoadUint64(&snapshot.parent.stats.TotBytesWrittenAtIndexTime)
 		binary.LittleEndian.PutUint64(val, bytesWritten)
-		internalBucket.Put(TotBytesWrittenKey, val)
+		err = internalBucket.Put(TotBytesWrittenKey, val)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
-	var filenames []string
-	newSegmentPaths := make(map[uint64]string)
+	filenames := make([]string, 0, len(snapshot.segment))
+	newSegmentPaths := make(map[uint64]string, len(snapshot.segment))
 
 	// first ensure that each segment in this snapshot has been persisted
 	for _, segmentSnapshot := range snapshot.segment {
@@ -602,6 +607,18 @@ func prepareBoltSnapshot(snapshot *IndexSnapshot, tx *bolt.Tx, path string,
 				return nil, nil, err
 			}
 		}
+
+		// store segment stats
+		if segmentSnapshot.stats != nil {
+			b, err := json.Marshal(segmentSnapshot.stats.Fetch())
+			if err != nil {
+				return nil, nil, err
+			}
+			err = snapshotSegmentBucket.Put(boltStatsKey, b)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 
 	return filenames, newSegmentPaths, nil
@@ -634,7 +651,7 @@ func (s *Scorch) persistSnapshotDirect(snapshot *IndexSnapshot) (err error) {
 	// the newly populated boltdb snapshotBucket above
 	if len(newSegmentPaths) > 0 {
 		// now try to open all the new snapshots
-		newSegments := make(map[uint64]segment.Segment)
+		newSegments := make(map[uint64]segment.Segment, len(newSegmentPaths))
 		defer func() {
 			for _, s := range newSegments {
 				if s != nil {
@@ -704,6 +721,7 @@ var boltMetaDataKey = []byte{'m'}
 var boltMetaDataSegmentTypeKey = []byte("type")
 var boltMetaDataSegmentVersionKey = []byte("version")
 var boltMetaDataTimeStamp = []byte("timeStamp")
+var boltStatsKey = []byte("stats")
 var TotBytesWrittenKey = []byte("TotBytesWritten")
 
 func (s *Scorch) loadFromBolt() error {
@@ -811,6 +829,10 @@ func (s *Scorch) loadSnapshot(snapshot *bolt.Bucket) (*IndexSnapshot, error) {
 	for k, _ := c.First(); k != nil; k, _ = c.Next() {
 		if k[0] == boltInternalKey[0] {
 			internalBucket := snapshot.Bucket(k)
+			if internalBucket == nil {
+				_ = rv.DecRef()
+				return nil, fmt.Errorf("internal bucket missing")
+			}
 			err := internalBucket.ForEach(func(key []byte, val []byte) error {
 				copiedVal := append([]byte(nil), val...)
 				rv.internal[string(key)] = copiedVal
@@ -858,6 +880,7 @@ func (s *Scorch) loadSegment(segmentBucket *bolt.Bucket) (*SegmentSnapshot, erro
 	rv := &SegmentSnapshot{
 		segment:    segment,
 		cachedDocs: &cachedDocs{cache: nil},
+		cachedMeta: &cachedMeta{meta: nil},
 	}
 	deletedBytes := segmentBucket.Get(boltDeletedKey)
 	if deletedBytes != nil {
@@ -871,6 +894,18 @@ func (s *Scorch) loadSegment(segmentBucket *bolt.Bucket) (*SegmentSnapshot, erro
 		if !deletedBitmap.IsEmpty() {
 			rv.deleted = deletedBitmap
 		}
+	}
+	statBytes := segmentBucket.Get(boltStatsKey)
+	if statBytes != nil {
+		var statsMap map[string]map[string]uint64
+
+		err := json.Unmarshal(statBytes, &statsMap)
+		stats := &fieldStats{statMap: statsMap}
+		if err != nil {
+			_ = segment.Close()
+			return nil, fmt.Errorf("error reading stat bytes: %v", err)
+		}
+		rv.stats = stats
 	}
 
 	return rv, nil
@@ -954,7 +989,7 @@ func getTimeSeriesSnapshots(maxDataPoints int, interval time.Duration,
 	return ptr, rv
 }
 
-// getProtectedEpochs aims to fetch the epochs keep based on a timestamp basis.
+// getProtectedSnapshots aims to fetch the epochs keep based on a timestamp basis.
 // It tries to get NumSnapshotsToKeep snapshots, each of which are separated
 // by a time duration of RollbackSamplingInterval.
 func getProtectedSnapshots(rollbackSamplingInterval time.Duration,
@@ -1105,7 +1140,7 @@ func (s *Scorch) removeOldZapFiles() error {
 	for _, f := range files {
 		fname := f.Name()
 		if filepath.Ext(fname) == ".zap" {
-			if _, exists := liveFileNames[fname]; !exists && !s.ineligibleForRemoval[fname] {
+			if _, exists := liveFileNames[fname]; !exists && !s.ineligibleForRemoval[fname] && (s.copyScheduled[fname] <= 0) {
 				err := os.Remove(s.path + string(os.PathSeparator) + fname)
 				if err != nil {
 					log.Printf("got err removing file: %s, err: %v", fname, err)
@@ -1170,6 +1205,9 @@ func (s *Scorch) rootBoltSnapshotMetaData() ([]*snapshotMetaData, error) {
 			}
 
 			snapshot := snapshots.Bucket(sk)
+			if snapshot == nil {
+				continue
+			}
 			metaBucket := snapshot.Bucket(boltMetaDataKey)
 			if metaBucket == nil {
 				continue
